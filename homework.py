@@ -119,7 +119,7 @@ def main():
                     send_message(bot, message)
                     prev_message = message
             else:
-                logger.debug(f'Отсутствие в ответе новых статусов')
+                logger.debug('Отсутствие в ответе новых статусов')
             current_timestamp = int(time.time())
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
