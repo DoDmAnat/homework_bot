@@ -8,6 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from http import HTTPStatus
+from exceptions import APIStatusError
 
 load_dotenv()
 
@@ -19,47 +20,50 @@ RETRY_TIME: int = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
-HOMEWORK_STATUSES = {
+HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    filename='program.log',
-    format='%(asctime)s, %(levelname)s, %(message)s',
-)
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler()
 logger.addHandler(handler)
 formatter = logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s'
+    '%(asctime)s - %(levelname)s - %(funcName)s - '
+    + '%(lineno)d - %(message)s'
 )
 handler.setFormatter(formatter)
 
 
 def send_message(bot, message):
     """Отправка сообщения в Telegram чат."""
+    logger.info('Происходит отправка сообщения')
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception:
-        logging.exception('Ошибка отправки сообщения')
-    logger.debug('Сообщение было отправлено.')
+    except Exception as error:
+        raise SystemError(f'Ошибка отправки сообщения, {error}')
+    else:
+        logger.info('Сообщение было отправлено.')
 
 
 def get_api_answer(current_timestamp):
     """Запрос к эндпоинту."""
+    logger.info('Начало проверки эндпоинта')
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
+    request_params = {'headers': HEADERS, 'params': params}
     try:
-        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+        response = requests.get(ENDPOINT, **request_params)
     except Exception:
         logging.exception('Ошибка запроса к эндпоинту')
     if response.status_code != HTTPStatus.OK:
-        response.raise_for_status()
-    logger.debug('Успешный запрос.')
-    return response.json()
+        raise APIStatusError(f'Ошибка запроса к API:{response.status_code}')
+    try:
+        response = response.json()
+    except Exception as error:
+        raise Exception(f'Ошибка запроса json: {error}')
+    return response
 
 
 def check_response(response):
@@ -78,8 +82,9 @@ def parse_status(homework):
     """Извлечение статуса домашней работы."""
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
-    verdict = HOMEWORK_STATUSES[homework_status]
-
+    verdict = HOMEWORK_VERDICTS[homework_status]
+    if 'homework_name' not in homework or 'status' not in homework:
+        raise KeyError('Отсутствует название домашки в homework')
     if verdict is None:
         raise KeyError('Статус домашней работы не определен')
 
@@ -104,23 +109,24 @@ def main():
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
     prev_message = f'Время: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-    send_message(
-        bot=bot,
-        message=prev_message
-    )
-
     while True:
         try:
             response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
-            current_timestamp = response['current_date']
-            for homework in homeworks:
-                status = parse_status(homework[0])
-                send_message(bot, status)
-
+            if homeworks:
+                message = parse_status(homeworks[0])
+                if prev_message != message:
+                    send_message(bot, message)
+                    prev_message = message
+            else:
+                logger.debug(f'Отсутствие в ответе новых статусов')
+            current_timestamp = int(time.time())
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message)
+            if prev_message != message:
+                send_message(bot, message)
+                prev_message = message
         finally:
             time.sleep(RETRY_TIME)
 
